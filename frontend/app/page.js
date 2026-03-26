@@ -1,9 +1,48 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
+import * as VKID from "@vkid/sdk";
+
+const VK_APP_ID = 54509594;
+const VK_REDIRECT_URL = "https://vk-inbox.vercel.app/auth";
+
+const STORAGE_KEYS = {
+  state: "vkid_state",
+  codeVerifier: "vkid_code_verifier",
+  token: "vk_user_token",
+  refreshToken: "vk_refresh_token",
+  userId: "vk_user_id",
+};
+
+function randomString(length = 64) {
+  const chars =
+    "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-._~";
+  let result = "";
+  const array = new Uint32Array(length);
+  crypto.getRandomValues(array);
+
+  for (let i = 0; i < length; i += 1) {
+    result += chars[array[i] % chars.length];
+  }
+
+  return result;
+}
+
+function initVkSdk({ state, codeVerifier }) {
+  VKID.Config.init({
+    app: VK_APP_ID,
+    redirectUrl: VK_REDIRECT_URL,
+    state,
+    codeVerifier,
+    scope: "email phone",
+  });
+}
 
 export default function Home() {
   const [groups, setGroups] = useState([]);
+  const [vkGroups, setVkGroups] = useState([]);
+  const [vkUserToken, setVkUserToken] = useState("");
+  const [vkUserId, setVkUserId] = useState("");
   const [vkGroupId, setVkGroupId] = useState("");
   const [accessToken, setAccessToken] = useState("");
   const [userAccessToken, setUserAccessToken] = useState("");
@@ -12,16 +51,99 @@ export default function Home() {
   const [postsResults, setPostsResults] = useState({});
   const [messagesResults, setMessagesResults] = useState({});
   const [replyText, setReplyText] = useState({});
+  const [authError, setAuthError] = useState("");
+
+  const backendBase = useMemo(() => "http://127.0.0.1:8001", []);
 
   const loadGroups = () => {
-    fetch("http://127.0.0.1:8001/groups")
+    fetch(`${backendBase}/groups`)
       .then((res) => res.json())
-      .then((data) => setGroups(data));
+      .then((data) => setGroups(data))
+      .catch(console.error);
+  };
+
+  const loadVkGroups = async (token) => {
+    if (!token) {
+      setVkGroups([]);
+      return;
+    }
+
+    setAuthError("");
+
+    try {
+      const response = await fetch(
+        `https://api.vk.com/method/groups.get?extended=1&filter=admin&access_token=${encodeURIComponent(
+          token
+        )}&v=5.131`
+      );
+      const data = await response.json();
+
+      if (data.error) {
+        setAuthError(data.error.error_msg || "Не удалось загрузить группы VK");
+        setVkGroups([]);
+        return;
+      }
+
+      setVkGroups(data.response?.items || []);
+    } catch (error) {
+      console.error(error);
+      setAuthError(
+        "Не удалось загрузить группы VK из браузера. Если VK заблокирует такой запрос, тогда понадобится маленький backend-прокси только для groups.get."
+      );
+      setVkGroups([]);
+    }
   };
 
   useEffect(() => {
     loadGroups();
-  }, []);
+
+    const token = localStorage.getItem(STORAGE_KEYS.token) || "";
+    const userId = localStorage.getItem(STORAGE_KEYS.userId) || "";
+
+    setVkUserToken(token);
+    setVkUserId(userId);
+    setUserAccessToken(token);
+
+    if (token) {
+      loadVkGroups(token);
+    }
+  }, [backendBase]);
+
+  const loginWithVk = async () => {
+    try {
+      const state = randomString(32);
+      const codeVerifier = randomString(64);
+
+      localStorage.setItem(STORAGE_KEYS.state, state);
+      localStorage.setItem(STORAGE_KEYS.codeVerifier, codeVerifier);
+
+      initVkSdk({ state, codeVerifier });
+
+      await VKID.Auth.login();
+    } catch (error) {
+      console.error(error);
+      alert("Ошибка запуска авторизации VK");
+    }
+  };
+
+  const logoutVk = () => {
+    localStorage.removeItem(STORAGE_KEYS.state);
+    localStorage.removeItem(STORAGE_KEYS.codeVerifier);
+    localStorage.removeItem(STORAGE_KEYS.token);
+    localStorage.removeItem(STORAGE_KEYS.refreshToken);
+    localStorage.removeItem(STORAGE_KEYS.userId);
+
+    setVkUserToken("");
+    setVkUserId("");
+    setVkGroups([]);
+    setUserAccessToken("");
+    setAuthError("");
+  };
+
+  const handleSelectVkGroup = (group) => {
+    setVkGroupId(String(group.id));
+    setUserAccessToken(vkUserToken);
+  };
 
   const handleSubmit = async (e) => {
     e.preventDefault();
@@ -32,8 +154,8 @@ export default function Home() {
     }
 
     const url = editingId
-      ? `http://127.0.0.1:8001/groups/${editingId}`
-      : "http://127.0.0.1:8001/groups";
+      ? `${backendBase}/groups/${editingId}`
+      : `${backendBase}/groups`;
 
     const method = editingId ? "PUT" : "POST";
 
@@ -59,7 +181,7 @@ export default function Home() {
 
     setVkGroupId("");
     setAccessToken("");
-    setUserAccessToken("");
+    setUserAccessToken(vkUserToken || "");
     setEditingId(null);
     loadGroups();
   };
@@ -67,7 +189,7 @@ export default function Home() {
   const handleDelete = async (groupId) => {
     if (!confirm("Удалить группу?")) return;
 
-    const res = await fetch(`http://127.0.0.1:8001/groups/${groupId}`, {
+    const res = await fetch(`${backendBase}/groups/${groupId}`, {
       method: "DELETE",
     });
 
@@ -99,7 +221,7 @@ export default function Home() {
       return;
     }
 
-    const res = await fetch(`http://127.0.0.1:8001/vk/check/${groupId}`);
+    const res = await fetch(`${backendBase}/vk/check/${groupId}`);
     const data = await res.json();
 
     setVkResults((prev) => ({
@@ -116,7 +238,7 @@ export default function Home() {
       return;
     }
 
-    const res = await fetch(`http://127.0.0.1:8001/vk/posts/${groupId}`);
+    const res = await fetch(`${backendBase}/vk/posts/${groupId}`);
     const data = await res.json();
 
     setPostsResults((prev) => ({
@@ -133,7 +255,7 @@ export default function Home() {
       return;
     }
 
-    const res = await fetch(`http://127.0.0.1:8001/messages/${groupId}`);
+    const res = await fetch(`${backendBase}/messages/${groupId}`);
     const data = await res.json();
 
     setMessagesResults((prev) => ({
@@ -150,7 +272,7 @@ export default function Home() {
       return;
     }
 
-    const res = await fetch("http://127.0.0.1:8001/messages/send", {
+    const res = await fetch(`${backendBase}/messages/send`, {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
@@ -174,7 +296,7 @@ export default function Home() {
       [peerId]: "",
     }));
 
-    const refreshRes = await fetch(`http://127.0.0.1:8001/messages/${groupId}`);
+    const refreshRes = await fetch(`${backendBase}/messages/${groupId}`);
     const refreshData = await refreshRes.json();
 
     setMessagesResults((prev) => ({
@@ -194,7 +316,7 @@ export default function Home() {
     setEditingId(null);
     setVkGroupId("");
     setAccessToken("");
-    setUserAccessToken("");
+    setUserAccessToken(vkUserToken || "");
   };
 
   const inputStyle = {
@@ -262,6 +384,124 @@ export default function Home() {
       }}
     >
       <h1 style={{ fontSize: 28, marginBottom: 20 }}>Список пабликов</h1>
+
+      <div style={{ marginBottom: 24 }}>
+        {!vkUserToken ? (
+          <button
+            onClick={loginWithVk}
+            style={{
+              padding: "10px 16px",
+              borderRadius: 8,
+              border: "none",
+              backgroundColor: "#4a76a8",
+              color: "#ffffff",
+              cursor: "pointer",
+              fontSize: 15,
+            }}
+          >
+            Войти через VK
+          </button>
+        ) : (
+          <div
+            style={{
+              padding: 14,
+              borderRadius: 10,
+              border: "1px solid #333",
+              backgroundColor: "#0b0b0b",
+              maxWidth: 520,
+            }}
+          >
+            <div style={{ marginBottom: 10 }}>
+              Авторизован через VK
+              {vkUserId ? ` | user_id: ${vkUserId}` : ""}
+            </div>
+
+            <button
+              onClick={logoutVk}
+              style={{
+                padding: "8px 14px",
+                borderRadius: 8,
+                border: "1px solid #666",
+                backgroundColor: "#1f1f1f",
+                color: "#ffffff",
+                cursor: "pointer",
+              }}
+            >
+              Выйти из VK
+            </button>
+          </div>
+        )}
+
+        {authError && (
+          <div
+            style={{
+              marginTop: 12,
+              padding: 12,
+              borderRadius: 10,
+              backgroundColor: "#220909",
+              border: "1px solid #663333",
+              color: "#ffb3b3",
+              maxWidth: 700,
+            }}
+          >
+            {authError}
+          </div>
+        )}
+      </div>
+
+      {vkUserToken && vkGroups.length > 0 && (
+        <div
+          style={{
+            marginBottom: 30,
+            padding: 16,
+            border: "1px solid #333",
+            borderRadius: 12,
+            backgroundColor: "#0b0b0b",
+          }}
+        >
+          <h2 style={{ marginTop: 0 }}>Мои группы VK</h2>
+
+          {vkGroups.map((group) => (
+            <div
+              key={group.id}
+              style={{
+                border: "1px solid #333",
+                borderRadius: 10,
+                padding: 12,
+                marginBottom: 10,
+                backgroundColor: "#111111",
+                display: "flex",
+                alignItems: "center",
+                gap: 12,
+              }}
+            >
+              {group.photo_100 && (
+                <img
+                  src={group.photo_100}
+                  alt={group.name}
+                  width={60}
+                  height={60}
+                  style={{ borderRadius: 10, objectFit: "cover" }}
+                />
+              )}
+
+              <div style={{ flex: 1 }}>
+                <div style={{ fontWeight: "bold", marginBottom: 4 }}>
+                  {group.name}
+                </div>
+                <div>ID: {group.id}</div>
+              </div>
+
+              <button
+                onClick={() => handleSelectVkGroup(group)}
+                style={actionButtonStyle}
+              >
+                Выбрать
+              </button>
+            </div>
+          ))}
+        </div>
+      )}
 
       <form
         onSubmit={handleSubmit}
@@ -351,28 +591,46 @@ export default function Home() {
 
         return (
           <div key={group.id} style={cardStyle}>
-            <h3 style={{ margin: "0 0 8px 0" }}>{group.name || "Без названия"}</h3>
+            <h3 style={{ margin: "0 0 8px 0" }}>
+              {group.name || "Без названия"}
+            </h3>
 
-            <p style={{ margin: "0 0 12px 0" }}>VK ID: {group.vk_group_id || "-"}</p>
+            <p style={{ margin: "0 0 12px 0" }}>
+              VK ID: {group.vk_group_id || "-"}
+            </p>
 
             <button onClick={() => handleEdit(group)} style={actionButtonStyle}>
               Редактировать
             </button>
 
-            <button onClick={() => handleDelete(group.id)} style={actionButtonStyle}>
+            <button
+              onClick={() => handleDelete(group.id)}
+              style={actionButtonStyle}
+            >
               Удалить
             </button>
 
-            <button onClick={() => handleCheckVk(group.id)} style={actionButtonStyle}>
+            <button
+              onClick={() => handleCheckVk(group.id)}
+              style={actionButtonStyle}
+            >
               {vkResults[group.id] ? "Скрыть VK" : "Проверить VK"}
             </button>
 
-            <button onClick={() => handleTogglePosts(group.id)} style={actionButtonStyle}>
+            <button
+              onClick={() => handleTogglePosts(group.id)}
+              style={actionButtonStyle}
+            >
               {postsResults[group.id] ? "Скрыть посты" : "Показать посты"}
             </button>
 
-            <button onClick={() => handleToggleMessages(group.id)} style={actionButtonStyle}>
-              {messagesResults[group.id] ? "Скрыть сообщения" : "Показать сообщения"}
+            <button
+              onClick={() => handleToggleMessages(group.id)}
+              style={actionButtonStyle}
+            >
+              {messagesResults[group.id]
+                ? "Скрыть сообщения"
+                : "Показать сообщения"}
             </button>
 
             {vkData && (
@@ -400,7 +658,13 @@ export default function Home() {
                   }}
                 />
                 <div>
-                  <div style={{ fontSize: 18, fontWeight: "bold", marginBottom: 6 }}>
+                  <div
+                    style={{
+                      fontSize: 18,
+                      fontWeight: "bold",
+                      marginBottom: 6,
+                    }}
+                  >
                     {vkData.name}
                   </div>
                   <div style={{ marginBottom: 4 }}>
@@ -409,9 +673,7 @@ export default function Home() {
                   <div style={{ marginBottom: 4 }}>
                     type: {vkData.type}
                   </div>
-                  <div>
-                    closed: {vkData.is_closed === 0 ? "нет" : "да"}
-                  </div>
+                  <div>closed: {vkData.is_closed === 0 ? "нет" : "да"}</div>
                 </div>
               </div>
             )}
@@ -526,7 +788,8 @@ export default function Home() {
                               color: "#dddddd",
                             }}
                           >
-                            Аудио: {att.artist || "Неизвестный артист"} — {att.title || "Без названия"}
+                            Аудио: {att.artist || "Неизвестный артист"} —{" "}
+                            {att.title || "Без названия"}
                           </div>
                         );
                       }
@@ -534,8 +797,15 @@ export default function Home() {
                       return null;
                     })}
 
-                    <div style={{ marginTop: 10, color: "#888888", fontSize: 14 }}>
-                      Лайки: {post.likes || 0} | Комментарии: {post.comments || 0} | Репосты: {post.reposts || 0}
+                    <div
+                      style={{
+                        marginTop: 10,
+                        color: "#888888",
+                        fontSize: 14,
+                      }}
+                    >
+                      Лайки: {post.likes || 0} | Комментарии: {post.comments || 0} |
+                      Репосты: {post.reposts || 0}
                     </div>
                   </div>
                 ))}
@@ -549,7 +819,8 @@ export default function Home() {
                 {msgs.map((msg) => (
                   <div key={msg.id} style={messageStyle}>
                     <div style={{ marginBottom: 6, color: "#aaaaaa" }}>
-                      {msg.direction === "in" ? "⬅ Входящее" : "➡ Исходящее"} | peer_id: {msg.vk_peer_id}
+                      {msg.direction === "in" ? "⬅ Входящее" : "➡ Исходящее"} |
+                      peer_id: {msg.vk_peer_id}
                     </div>
 
                     <div style={{ marginBottom: 10 }}>
@@ -580,7 +851,9 @@ export default function Home() {
                         />
 
                         <button
-                          onClick={() => handleSendMessage(group.id, msg.vk_peer_id)}
+                          onClick={() =>
+                            handleSendMessage(group.id, msg.vk_peer_id)
+                          }
                           style={{
                             padding: "8px 14px",
                             borderRadius: 8,
