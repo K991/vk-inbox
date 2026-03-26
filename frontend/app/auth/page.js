@@ -14,13 +14,13 @@ const STORAGE_KEYS = {
   userId: "vk_user_id",
 };
 
-function initVkSdk({ state, codeVerifier }) {
+function initVkSdk(state, codeVerifier) {
   VKID.Config.init({
     app: VK_APP_ID,
     redirectUrl: VK_REDIRECT_URL,
     state,
     codeVerifier,
-    scope: "email phone",
+    scope: "groups",
   });
 }
 
@@ -61,7 +61,7 @@ export default function AuthPage() {
           return;
         }
 
-        initVkSdk({ state: savedState, codeVerifier });
+        initVkSdk(savedState, codeVerifier);
 
         const tokenResult = await VKID.Auth.exchangeCode(
           code,
@@ -81,8 +81,12 @@ export default function AuthPage() {
 
         window.location.replace("/");
       } catch (error) {
-        console.error(error);
-        setMessage("Не удалось завершить авторизацию VK");
+        console.error("VK exchange error:", error);
+        setMessage(
+          `Не удалось завершить авторизацию VK${
+            error?.message ? `: ${error.message}` : ""
+          }`
+        );
       }
     };
 
