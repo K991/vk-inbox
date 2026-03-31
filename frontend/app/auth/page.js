@@ -9,27 +9,26 @@ const STORAGE_KEYS = {
 
 export default function AuthPage() {
   useEffect(() => {
-    const hash = window.location.hash.replace(/^#/, "");
-    const params = new URLSearchParams(hash);
+    const params = new URLSearchParams(window.location.search);
 
-    const accessToken = params.get("access_token");
+    const token = params.get("token");
     const userId = params.get("user_id");
     const error = params.get("error");
-    const errorDescription = params.get("error_description");
+    const detail = params.get("detail");
 
-    if (error) {
-      alert(`Ошибка VK OAuth: ${errorDescription || error}`);
+    if (error || detail) {
+      alert(`Ошибка VK OAuth: ${detail || error}`);
       window.location.replace("/");
       return;
     }
 
-    if (!accessToken) {
-      alert("VK не вернул access_token");
+    if (!token) {
+      alert("Backend не вернул токен VK");
       window.location.replace("/");
       return;
     }
 
-    localStorage.setItem(STORAGE_KEYS.token, accessToken);
+    localStorage.setItem(STORAGE_KEYS.token, token);
 
     if (userId) {
       localStorage.setItem(STORAGE_KEYS.userId, userId);

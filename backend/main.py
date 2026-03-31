@@ -1,9 +1,12 @@
-from fastapi import FastAPI, Depends, HTTPException
-from fastapi.middleware.cors import CORSMiddleware
-from sqlalchemy.orm import Session
-from pydantic import BaseModel
-import requests
+import os
 import random
+import requests
+
+from fastapi import FastAPI, Depends, HTTPException, Query
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import RedirectResponse
+from pydantic import BaseModel
+from sqlalchemy.orm import Session
 
 from database import engine, Base, SessionLocal
 import models
@@ -11,9 +14,18 @@ import schemas
 
 app = FastAPI()
 
+FRONTEND_URL = os.getenv("FRONTEND_URL", "https://vk-inbox.vercel.app")
+BACKEND_PUBLIC_URL = os.getenv("BACKEND_PUBLIC_URL", "https://YOUR-BACKEND-URL")
+VK_CLIENT_ID = os.getenv("VK_CLIENT_ID", "54509594")
+VK_CLIENT_SECRET = os.getenv("VK_CLIENT_SECRET", "PASTE_YOUR_SECRET_HERE")
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:3000"],
+    allow_origins=[
+        "http://localhost:3000",
+        "https://vk-inbox.vercel.app",
+        FRONTEND_URL,
+    ],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -63,6 +75,97 @@ def fetch_vk_group_info(vk_group_id: str, access_token: str):
 def read_root():
     return {"status": "ok"}
 
+
+# =========================
+# VK OAUTH
+# =========================
+
+@app.get("/oauth/vk/start")
+def oauth_vk_start():
+    redirect_uri = f"{BACKEND_PUBLIC_URL}/oauth/vk/callback"
+
+    params = {
+        "client_id": VK_CLIENT_ID,
+        "redirect_uri": redirect_uri,
+        "display": "page",
+        "scope": "groups,offline",
+        "response_type": "code",
+        "v": "5.131",
+    }
+
+    query = "&".join([f"{k}={requests.utils.quote(str(v), safe='')}" for k, v in params.items()])
+    auth_url = f"https://oauth.vk.com/authorize?{query}"
+
+    return RedirectResponse(auth_url)
+
+
+@app.get("/oauth/vk/callback")
+def oauth_vk_callback(
+    code: str = Query(...),
+):
+    redirect_uri = f"{BACKEND_PUBLIC_URL}/oauth/vk/callback"
+
+    token_url = "https://oauth.vk.com/access_token"
+    params = {
+        "client_id": VK_CLIENT_ID,
+        "client_secret": VK_CLIENT_SECRET,
+        "redirect_uri": redirect_uri,
+        "code": code,
+    }
+
+    try:
+        response = requests.get(token_url, params=params, timeout=15)
+        response.raise_for_status()
+        data = response.json()
+    except requests.RequestException as e:
+        raise HTTPException(status_code=500, detail=f"Ошибка обмена кода VK: {str(e)}")
+
+    if "error" in data:
+        error_msg = data.get("error_description") or data.get("error") or "Ошибка VK OAuth"
+        raise HTTPException(status_code=400, detail=error_msg)
+
+    access_token = data.get("access_token")
+    user_id = data.get("user_id")
+
+    if not access_token:
+        raise HTTPException(status_code=400, detail="VK не вернул access_token")
+
+    redirect_to_front = (
+        f"{FRONTEND_URL}/auth"
+        f"?token={requests.utils.quote(access_token, safe='')}"
+        f"&user_id={requests.utils.quote(str(user_id or ''), safe='')}"
+    )
+
+    return RedirectResponse(redirect_to_front)
+
+
+@app.get("/oauth/vk/my-groups")
+def oauth_vk_my_groups(token: str = Query(...)):
+    url = "https://api.vk.com/method/groups.get"
+    params = {
+        "extended": 1,
+        "filter": "admin",
+        "access_token": token,
+        "v": "5.131",
+    }
+
+    try:
+        response = requests.get(url, params=params, timeout=15)
+        response.raise_for_status()
+        data = response.json()
+    except requests.RequestException as e:
+        raise HTTPException(status_code=500, detail=f"Ошибка запроса к VK: {str(e)}")
+
+    if "error" in data:
+        error_msg = data["error"].get("error_msg", "Ошибка VK API")
+        raise HTTPException(status_code=400, detail=error_msg)
+
+    return data
+
+
+# =========================
+# GROUPS CRUD
+# =========================
 
 @app.post("/groups", response_model=schemas.GroupOut)
 def create_group(group: schemas.GroupCreate, db: Session = Depends(get_db)):
@@ -143,6 +246,10 @@ def delete_group(group_id: int, db: Session = Depends(get_db)):
     db.commit()
     return {"message": "Группа удалена"}
 
+
+# =========================
+# VK INFO / POSTS
+# =========================
 
 @app.get("/vk/check/{group_id}")
 def check_vk(group_id: int, db: Session = Depends(get_db)):
@@ -273,6 +380,10 @@ def get_vk_posts(group_id: int, db: Session = Depends(get_db)):
         raise HTTPException(status_code=500, detail=f"Ошибка запроса к VK: {str(e)}")
 
 
+# =========================
+# MESSAGES
+# =========================
+
 @app.get("/messages/{group_id}")
 def get_messages(group_id: int, db: Session = Depends(get_db)):
     group = db.query(models.Group).filter(models.Group.id == group_id).first()
@@ -327,10 +438,6 @@ def send_message(payload: SendMessageRequest, db: Session = Depends(get_db)):
         if "error" in data:
             error_msg = data["error"].get("error_msg", "Ошибка VK API")
             raise HTTPException(status_code=400, detail=f"VK API: {error_msg}")
-
-        # ВАЖНО:
-        # здесь больше НЕ сохраняем сообщение в БД.
-        # его сохранит message_poller.py через событие message_reply
 
         return {"status": "ok", "vk_response": data}
 
