@@ -43,7 +43,7 @@ export default function Home() {
       `https://oauth.vk.com/authorize` +
       `?client_id=${encodeURIComponent(VK_CLIENT_ID)}` +
       `&display=page` +
-      `&redirect_uri=${encodeURIComponent(REDIRECT_URI)}` +
+      `&redirect_uri=${REDIRECT_URI}` +
       `&scope=${encodeURIComponent("groups,offline")}` +
       `&response_type=token` +
       `&v=5.131`;
