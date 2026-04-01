@@ -23,7 +23,7 @@ export default function Home() {
   }, []);
 
   const loginVK = () => {
-    window.location.href = ${API_URL}/oauth/vk/start;
+    window.location.href = `${API_URL}/oauth/vk/start`;
   };
 
   return (
