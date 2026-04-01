@@ -5,7 +5,8 @@ import { useEffect, useState } from "react";
 export default function Home() {
   const [groups, setGroups] = useState([]);
 
-  const API_URL = "http://127.0.0.1:8001";
+  const API_URL =
+    process.env.NEXT_PUBLIC_BACKEND_URL || "https://vk-inbox.onrender.com";
 
   const fetchGroups = async () => {
     try {
@@ -22,7 +23,7 @@ export default function Home() {
   }, []);
 
   const loginVK = () => {
-    window.location.href = ${API_URL}/auth/vk;
+    window.location.href = ${API_URL}/oauth/vk/start;
   };
 
   return (
@@ -45,7 +46,7 @@ export default function Home() {
           }}
         >
           <p>{g.name}</p>
-          <p>ID: {g.group_id}</p>
+          <p>ID: {g.vk_group_id}</p>
         </div>
       ))}
     </div>
